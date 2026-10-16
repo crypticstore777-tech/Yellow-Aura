@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yellow Aura</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --fg: #f5f5f5;
+      --muted: #888;
+      --accent: #facc15;
+      --surface: #1a1a1a;
+      --border: #333;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, sans-serif;
+      height: 100dvh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+    }
+    header {
+      position: absolute;
+      top: 1.5rem;
+      left: 1.5rem;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .wordmark {
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .status {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+    .hint {
+      position: absolute;
+      bottom: 10rem;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      pointer-events: none;
+      z-index: 5;
+    }
+    .dock {
+      position: absolute;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      background: rgba(10,10,10,0.8);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.75rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      justify-content: center;
+      max-width: 90vw;
+    }
+    button, .btn {
+      background: transparent;
+      border: none;
+      color: var(--fg);
+      padding: 0.6rem 0.8rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    button:hover, .btn:hover { background: var(--surface); }
+    button.active { background: var(--accent); color: #000; }
+    input[type="range"] { width: 80px; accent-color: var(--accent); }
+    .theme-btn { font-size: 0.75rem; padding: 0.4rem 0.6rem; }
+    #file-input { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <header>
+    <div class="dot"></div>
+    <div>
+      <div class="wordmark">Yellow Aura</div>
+      <div class="status" id="status">Waiting for a signal</div>
+    </div>
+  </header>
+
+  <p class="hint">Open the mic, drop a track, or start the demo</p>
+
+  <div class="dock">
+    <button id="mic-btn" title="Use microphone">Mic</button>
+    <button id="file-btn" title="Open audio file">File</button>
+    <button id="demo-btn" title="Play demo groove">Demo</button>
+    <button id="play-btn" disabled>Play</button>
+
+    <div style="display:flex; gap:0.4rem; margin-left:0.5rem;">
+      <button class="theme-btn viz" data-viz="bars">Bars</button>
+      <button class="theme-btn viz" data-viz="radial">Radial</button>
+      <button class="theme-btn viz" data-viz="halo">Halo</button>
+    </div>
+
+    <div style="display:flex; gap:0.4rem;">
+      <button class="theme-btn theme" data-theme="aura">Aura</button>
+      <button class="theme-btn theme" data-theme="ivory">Ivory</button>
+      <button class="theme-btn theme" data-theme="flare">Flare</button>
+      <button class="theme-btn theme" data-theme="noir">Noir</button>
+    </div>
+
+    <label style="font-size:0.75rem; color:var(--muted);">Sense
+      <input type="range" id="sensitivity" min="0.5" max="4" step="0.1" value="1.6">
+    </label>
+
+    <button id="fs-btn" title="Fullscreen">FS</button>
+  </div>
+
+  <input type="file" id="file-input" accept="audio/*">
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const micBtn = document.getElementById('mic-btn');
+    const fileBtn = document.getElementById('file-btn');
+    const demoBtn = document.getElementById('demo-btn');
+    const playBtn = document.getElementById('play-btn');
+    const sensitivity = document.getElementById('sensitivity');
+    const fsBtn = document.getElementById('fs-btn');
+    const fileInput = document.getElementById('file-input');
+
+    let audioCtx, analyser, source, dataArray;
+    let mode = 'idle'; // idle | mic | file | demo
+    let viz = 'bars';
+    let theme = 'aura';
+    let isPlaying = false;
+    let demoOsc;
+
+    const themes = {
+      aura: { primary: '#facc15', secondary: '#f59e0b', bg: '#0a0a0a' },
+      ivory: { primary: '#fef3c7', secondary: '#fde68a', bg: '#111' },
+      flare: { primary: '#fb923c', secondary: '#f97316', bg: '#0c0a09' },
+      noir: { primary: '#e5e5e5', secondary: '#a3a3a3', bg: '#000' }
+    };
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    async function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+      }
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+    }
+
+    async function startMic() {
+      await initAudio();
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (source) source.disconnect();
+        source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        mode = 'mic';
+        statusEl.textContent = 'Microphone live';
+        isPlaying = true;
+        playBtn.disabled = false;
+        playBtn.textContent = 'Stop';
+        micBtn.classList.add('active');
+        fileBtn.classList.remove('active');
+        demoBtn.classList.remove('active');
+      } catch (e) {
+        statusEl.textContent = 'Mic permission denied';
+      }
+    }
+
+    function loadFile(file) {
+      initAudio().then(() => {
+        const reader = new FileReader();
+        reader.onload = e => {
+          audioCtx.decodeAudioData(e.target.result, buffer => {
+            if (source) source.disconnect();
+            source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(analyser);
+            source.loop = true;
+            source.start();
+            mode = 'file';
+            statusEl.textContent = file.name;
+            isPlaying = true;
+            playBtn.disabled = false;
+            playBtn.textContent = 'Stop';
+            fileBtn.classList.add('active');
+            micBtn.classList.remove('active');
+            demoBtn.classList.remove('active');
+          });
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    async function startDemo() {
+      await initAudio();
+      if (source) source.disconnect();
+      // Simple oscillating tone as demo groove
+      demoOsc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      demoOsc.type = 'sawtooth';
+      demoOsc.frequency.setValueAtTime(110, audioCtx.currentTime);
+      gain.gain.value = 0.15;
+      demoOsc.connect(gain);
+      gain.connect(analyser);
+      demoOsc.start();
+      mode = 'demo';
+      statusEl.textContent = 'Demo groove';
+      isPlaying = true;
+      playBtn.disabled = false;
+      playBtn.textContent = 'Stop';
+      demoBtn.classList.add('active');
+      micBtn.classList.remove('active');
+      fileBtn.classList.remove('active');
+    }
+
+    function stopAll() {
+      if (source) try { source.stop(); source.disconnect(); } catch(e) {}
+      if (demoOsc) try { demoOsc.stop(); } catch(e) {}
+      mode = 'idle';
+      isPlaying = false;
+      statusEl.textContent = 'Waiting for a signal';
+      playBtn.disabled = true;
+      playBtn.textContent = 'Play';
+      micBtn.classList.remove('active');
+      fileBtn.classList.remove('active');
+      demoBtn.classList.remove('active');
+    }
+
+    micBtn.onclick = startMic;
+    fileBtn.onclick = () => fileInput.click();
+    fileInput.onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+    demoBtn.onclick = startDemo;
+    playBtn.onclick = () => isPlaying ? stopAll() : (mode === 'mic' ? startMic() : mode === 'demo' ? startDemo() : null);
+
+    document.querySelectorAll('.viz').forEach(b => {
+      b.onclick = () => {
+        viz = b.dataset.viz;
+        document.querySelectorAll('.viz').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+      };
+    });
+    document.querySelectorAll('.theme').forEach(b => {
+      b.onclick = () => {
+        theme = b.dataset.theme;
+        document.querySelectorAll('.theme').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        document.body.style.background = themes[theme].bg;
+      };
+    });
+    document.querySelector('.viz').classList.add('active');
+    document.querySelector('.theme').classList.add('active');
+
+    fsBtn.onclick = () => {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    };
+
+    function draw() {
+      requestAnimationFrame(draw);
+      const w = canvas.width, h = canvas.height;
+      const t = themes[theme];
+      ctx.fillStyle = t.bg;
+      ctx.fillRect(0, 0, w, h);
+
+      if (!analyser || !isPlaying) return;
+
+      analyser.getByteFrequencyData(dataArray);
+      const sens = parseFloat(sensitivity.value);
+      const bins = dataArray.length;
+
+      ctx.strokeStyle = t.primary;
+      ctx.fillStyle = t.primary;
+      ctx.lineWidth = 2;
+
+      if (viz === 'bars') {
+        const barW = w / bins * 1.8;
+        for (let i = 0; i < bins; i++) {
+          const val = (dataArray[i] / 255) * sens * (h * 0.6);
+          ctx.fillRect(i * barW, h - val, barW * 0.7, val);
+        }
+      } else if (viz === 'radial') {
+        const cx = w / 2, cy = h / 2;
+        const radius = Math.min(w, h) * 0.3;
+        for (let i = 0; i < bins; i++) {
+          const angle = (i / bins) * Math.PI * 2;
+          const val = (dataArray[i] / 255) * sens * radius;
+          const x1 = cx + Math.cos(angle) * radius;
+          const y1 = cy + Math.sin(angle) * radius;
+          const x2 = cx + Math.cos(angle) * (radius + val);
+          const y2 = cy + Math.sin(angle) * (radius + val);
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+      } else if (viz === 'halo') {
+        const cx = w / 2, cy = h / 2;
+        const base = Math.min(w, h) * 0.25;
+        const avg = dataArray.reduce((a,b) => a+b, 0) / bins;
+        const pulse = (avg / 255) * sens * 80;
+        ctx.beginPath();
+        ctx.arc(cx, cy, base + pulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.3;
+        ctx.beginPath();
+        ctx.arc(cx, cy, base + pulse * 1.4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+    draw();
+  </script>
+</body>
+</html>
